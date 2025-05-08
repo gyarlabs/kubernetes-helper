@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Optional RBAC if cluster-check is parsedd
+# Optional RBAC if cluster-check is parsedd, need to define manually the CR, using system master cannot go idk why
 if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
   kubectl apply -f - <<EOF
 apiVersion: v1
@@ -85,6 +85,7 @@ subjects:
 EOF
 fi
 
+#need to make equal==true to avoid sa not found when not goin to use --cluster-check
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
