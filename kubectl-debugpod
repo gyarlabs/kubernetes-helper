@@ -1,0 +1,135 @@
+#!/bin/bash
+
+set -e
+
+NAMESPACE="default"
+NAME="debugpod"
+IMAGE="arsaphone/debugpod:v2"
+STAY=0
+NODE=""
+CMD="/bin/sh"
+CLUSTER_CHECK=0
+
+# 11 may need to add help
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  cat <<EOF
+kubectl debugpod - A Kubernetes CLI plugin to launch temporary debug pods
+
+USAGE:
+  kubectl debugpod [flags]
+
+FLAGS:
+  -n, --namespace NS       Target namespace (default: "default")
+      --node NODE          Schedule the pod to a specific node
+      --stay               Don't auto-delete the pod after exit
+      --bash               Use /bin/bash as the shell (default is /bin/sh)
+      --cluster-check      Run k8sgpt analysis using a temporary service account
+  -h, --help               Show this help message and exit
+
+EXAMPLES:
+  kubectl debugpod
+  kubectl debugpod --node ip-10-0-0-1.ec2.internal
+  kubectl debugpod --cluster-check
+EOF
+  exit 0
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--namespace) NAMESPACE="$2"; shift ;;
+    --name) NAME="$2"; shift ;;
+    --image) IMAGE="$2"; shift ;;
+    --node) NODE="$2"; shift ;;
+    --stay) STAY=1 ;;
+    --bash) CMD="/bin/bash" ;;
+    --cluster-check) CLUSTER_CHECK=1; CMD="k8sgpt analyze --output text" ;;
+    -h|--help)
+      echo "Usage: kubectl debugpod [--namespace NS] [--name NAME] [--image IMAGE] [--node NODE] [--stay] [--bash] [--cluster-check]"
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+  shift
+done
+
+
+#need to define manually the CR, using system master cannot go idk why
+if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
+  kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "endpoints", "services", "configmaps", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["cronjobs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${NAME}-sa
+  namespace: ${NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${NAME}-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-reader
+subjects:
+- kind: ServiceAccount
+  name: ${NAME}-sa
+  namespace: ${NAMESPACE}
+EOF
+fi
+
+
+#need to make equal==true to avoid sa not found when not goin to use --cluster-check
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: debugpod
+spec:
+  $( [[ "$CLUSTER_CHECK" -eq 1 ]] && echo "serviceAccountName: ${NAME}-sa" )
+  containers:
+  - name: debug
+    image: ${IMAGE}
+    command: ["/bin/sh", "-c", "${CMD}"]
+    stdin: true
+    tty: true
+  restartPolicy: Never
+  $( [[ -n "$NODE" ]] && echo "nodeName: \"$NODE\"" )
+EOF
+
+kubectl wait --for=condition=Ready pod "$NAME" -n "$NAMESPACE" --timeout=30s
+kubectl -n "$NAMESPACE" attach -it "$NAME"
+
+if [[ "$STAY" -eq 0 ]]; then
+  kubectl delete pod "$NAME" -n "$NAMESPACE"
+  if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
+    kubectl delete serviceaccount "${NAME}-sa" -n "$NAMESPACE"
+    kubectl delete clusterrolebinding "${NAME}-binding"
+    echo "created & enhanced by gyarlabs"
+  fi
+else
+  echo "Pod '$NAME' is left running."
+fi
