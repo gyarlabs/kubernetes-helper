@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --image) IMAGE="$2"; shift ;;
     --node) NODE="$2"; shift ;;
     --stay) STAY=1 ;;
-    --bash) CMD="/bin/bash" ;;
+    --bash) CMD="/bin/sh" ;;
     --cluster-check)
       CLUSTER_CHECK=1
       shift
