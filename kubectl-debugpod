@@ -21,8 +21,6 @@ USAGE:
 
 FLAGS:
   -n, --namespace NS       Target namespace (default: "default")
-      --name NAME          Pod name (default: "debugpod")
-      --image IMAGE        Container image (default: arsaphone/debugpod:v2)
       --node NODE          Schedule the pod to a specific node
       --stay               Don't auto-delete the pod after exit
       --bash               Use /bin/bash as the shell (default is /bin/sh)
@@ -62,11 +60,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# If cluster-check enabled, prepare k8sgpt command and RBAC
+#rbac
 if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
   CMD="k8sgpt ${CLUSTER_CMD:-analyze --output text}"
 
-  # Create necessary RBAC
   kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
