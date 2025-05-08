@@ -9,8 +9,9 @@ STAY=0
 NODE=""
 CMD="/bin/sh"
 CLUSTER_CHECK=0
+CLUSTER_CMD=""
 
-# 11 may need to add help
+# Help message
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   cat <<EOF
 kubectl debugpod - A Kubernetes CLI plugin to launch temporary debug pods
@@ -23,17 +24,18 @@ FLAGS:
       --node NODE          Schedule the pod to a specific node
       --stay               Don't auto-delete the pod after exit
       --bash               Use /bin/bash as the shell (default is /bin/sh)
-      --cluster-check      Run k8sgpt analysis using a temporary service account
+      --cluster-check      Run k8sgpt analysis (accepts additional k8sgpt args)
   -h, --help               Show this help message and exit
 
 EXAMPLES:
   kubectl debugpod
   kubectl debugpod --node ip-10-0-0-1.ec2.internal
-  kubectl debugpod --cluster-check
+  kubectl debugpod --cluster-check --explain
 EOF
   exit 0
 fi
 
+# lempar args
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--namespace) NAMESPACE="$2"; shift ;;
@@ -42,19 +44,26 @@ while [[ $# -gt 0 ]]; do
     --node) NODE="$2"; shift ;;
     --stay) STAY=1 ;;
     --bash) CMD="/bin/bash" ;;
-    --cluster-check)  CLUSTER_CHECK=1
-  shift
-  K8SGPT_ARGS=""
-  while [[ $# -gt 0 && "$1" != --* ]]; do
-    K8SGPT_ARGS="$K8SGPT_ARGS $1"
-    shift
-  done
-  CMD="k8sgpt analyze ${K8SGPT_ARGS:-"--output text"}"
-  ;;
+    --cluster-check)
+      CLUSTER_CHECK=1
+      shift
+      while [[ $# -gt 0 && "$1" != --* ]]; do
+        CLUSTER_CMD+="$1 "
+        shift
+      done
+      ;;
+    -h|--help)
+      echo "Usage: kubectl debugpod [--namespace NS] [--name NAME] [--image IMAGE] [--node NODE] [--stay] [--bash] [--cluster-check [k8sgpt args]]"
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
 
-
-#need to define manually the CR, using system master cannot go idk why
+# set default
 if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
+  CMD="k8sgpt ${CLUSTER_CMD:-analyze --output text}"
+
   kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -98,8 +107,7 @@ subjects:
 EOF
 fi
 
-
-#need to make equal==true to avoid sa not found when not goin to use --cluster-check
+# Deploy debug pod,#need to make equal==true to avoid sa not found when not goin to use --cluster-check
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -123,6 +131,7 @@ EOF
 kubectl wait --for=condition=Ready pod "$NAME" -n "$NAMESPACE" --timeout=30s
 kubectl -n "$NAMESPACE" attach -it "$NAME"
 
+# Cleanup
 if [[ "$STAY" -eq 0 ]]; then
   kubectl delete pod "$NAME" -n "$NAMESPACE"
   if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
