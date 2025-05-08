@@ -45,13 +45,17 @@ while [[ $# -gt 0 ]]; do
     --stay) STAY=1 ;;
     --bash) CMD="/bin/bash" ;;
     --cluster-check)
-      CLUSTER_CHECK=1
-      shift
-      while [[ $# -gt 0 && "$1" != --* ]]; do
-        CLUSTER_CMD+="$1 "
-        shift
-      done
-      ;;
+  CLUSTER_CHECK=1
+  shift
+  while [[ $# -gt 0 && "$1" != -* ]]; do
+    CLUSTER_CMD+="$1 "
+    shift
+  done
+  while [[ $# -gt 0 && "$1" == --* ]]; do
+    CLUSTER_CMD+="$1 "
+    shift
+  done
+  ;;
     -h|--help)
       echo "Usage: kubectl debugpod [--namespace NS] [--name NAME] [--image IMAGE] [--node NODE] [--stay] [--bash] [--cluster-check [k8sgpt args]]"
       exit 0
