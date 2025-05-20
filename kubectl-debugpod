@@ -10,12 +10,12 @@ NODE=""
 CMD="/bin/bash"
 CLUSTER_CHECK=0
 CLUSTER_CMD=""
-SECRET_MODE=0
+SECRETS_MODE=0
+DECODE=0
 SECRET_NAMESPACE=""
 SECRET_NAME=""
-DECODE=0
+CHECK_LIMITS=0
 
-# Help message
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   cat <<EOF
 kubectl debugpod - A Kubernetes CLI plugin to launch temporary debug pods
@@ -29,22 +29,15 @@ FLAGS:
       --stay               Don't auto-delete the pod after exit
       --bash               Use /bin/bash as the shell (default is /bin/sh)
       --cluster-check      Run k8sgpt analysis (accepts additional k8sgpt args)
-      --secrets [NS] [NAME] Get secrets (optional namespace and name)
-      --decode             Base64-decode secret values
+      --secrets [NS] [NAME]   Show Kubernetes secrets; optionally pass namespace and secret name
+      --decode             Decode base64-encoded secret values
+      --check-limits       Check for deployments without CPU/memory limits
   -h, --help               Show this help message and exit
-
-EXAMPLES:
-  kubectl debugpod
-  kubectl debugpod --node ip-10-0-0-1.ec2.internal
-  kubectl debugpod --cluster-check --explain
-  kubectl debugpod --secrets
-  kubectl debugpod --secrets dev
-  kubectl debugpod --secrets dev my-secret --decode
 EOF
   exit 0
 fi
 
-# Parse arguments
+# Parse flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--namespace) NAMESPACE="$2"; shift ;;
@@ -53,62 +46,25 @@ while [[ $# -gt 0 ]]; do
     --node) NODE="$2"; shift ;;
     --stay) STAY=1 ;;
     --bash) CMD="/bin/sh" ;;
+    --decode) DECODE=1 ;;
+    --secrets)
+      SECRETS_MODE=1
+      shift
+      [[ $# -gt 0 && ! "$1" =~ ^-- ]] && SECRET_NAMESPACE="$1" && shift
+      [[ $# -gt 0 && ! "$1" =~ ^-- ]] && SECRET_NAME="$1" && shift
+      ;;
+    --check-limits) CHECK_LIMITS=1 ;;
     --cluster-check)
       CLUSTER_CHECK=1
       shift
-      while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+      while [[ $# -gt 0 ]]; do
         CLUSTER_CMD+="$1 "
         shift
       done
       ;;
-    --secrets)
-      SECRET_MODE=1
-      shift
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        SECRET_NAMESPACE="$1"
-        shift
-      fi
-      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-        SECRET_NAME="$1"
-        shift
-      fi
-      ;;
-    --decode)
-      DECODE=1
-      ;;
-    -h|--help)
-      echo "Use --help to see usage"
-      exit 0
-      ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
-
-# Secrets logic
-if [[ "$SECRET_MODE" -eq 1 ]]; then
-  ns_opt="--all-namespaces"
-  [[ -n "$SECRET_NAMESPACE" ]] && ns_opt="-n $SECRET_NAMESPACE"
-
-  if [[ -n "$SECRET_NAME" ]]; then
-    secrets=$(kubectl get secret "$SECRET_NAME" $ns_opt -o json)
-  else
-    secrets=$(kubectl get secrets $ns_opt -o json)
-  fi
-
-  echo "$secrets" | jq -r '
-    .items[] | 
-    "Namespace: \(.metadata.namespace)\nName: \(.metadata.name)\nType: \(.type)\nData:\n" +
-    (
-      if $DECODE then 
-        (.data | to_entries[] | "  \(.key): \(.value | @base64d)")
-      else 
-        (.data | to_entries[] | "  \(.key): \(.value)")
-      end | join("\n")
-    ) + "\n---"
-  ' --argjson DECODE "$DECODE"
-
-  exit 0
-fi
 
 # RBAC for k8sgpt
 if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
@@ -163,7 +119,28 @@ subjects:
 EOF
 fi
 
-# Deploy debug pod
+# Secrets mode
+if [[ "$SECRETS_MODE" -eq 1 ]]; then
+  TARGET_NS="${SECRET_NAMESPACE:-"--all-namespaces"}"
+  CMD="kubectl get secrets $TARGET_NS"
+  [[ -n "$SECRET_NAME" ]] && CMD+=" $SECRET_NAME"
+  CMD+=" -o json"
+
+  if [[ "$DECODE" -eq 1 ]]; then
+    CMD+=" | jq -r '.data | to_entries[] | \"\(.key)=\(.value | @base64d)\"'"
+  else
+    CMD+=" | jq -r '.data | to_entries[] | \"\(.key)=\(.value)\"'"
+  fi
+
+  CMD="sh -c \"$CMD\""
+fi
+
+# Check deployment limits
+if [[ "$CHECK_LIMITS" -eq 1 ]]; then
+  CMD="sh -c 'kubectl get deployments --all-namespaces -o json | jq -r \\\".items[] | select(.spec.template.spec.containers[]?.resources.limits == null) | [.metadata.namespace, .metadata.name] | @tsv\\\" | column -t'"
+fi
+
+# Launch pod
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
