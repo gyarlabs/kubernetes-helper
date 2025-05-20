@@ -7,9 +7,13 @@ NAME="debugpod"
 IMAGE="arsaphone/debugpod:v2"
 STAY=0
 NODE=""
-CMD="/bin/sh"
+CMD="/bin/bash"
 CLUSTER_CHECK=0
 CLUSTER_CMD=""
+SECRET_MODE=0
+SECRET_NAMESPACE=""
+SECRET_NAME=""
+DECODE=0
 
 # Help message
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
@@ -25,12 +29,17 @@ FLAGS:
       --stay               Don't auto-delete the pod after exit
       --bash               Use /bin/bash as the shell (default is /bin/sh)
       --cluster-check      Run k8sgpt analysis (accepts additional k8sgpt args)
+      --secrets [NS] [NAME] Get secrets (optional namespace and name)
+      --decode             Base64-decode secret values
   -h, --help               Show this help message and exit
 
 EXAMPLES:
   kubectl debugpod
   kubectl debugpod --node ip-10-0-0-1.ec2.internal
   kubectl debugpod --cluster-check --explain
+  kubectl debugpod --secrets
+  kubectl debugpod --secrets dev
+  kubectl debugpod --secrets dev my-secret --decode
 EOF
   exit 0
 fi
@@ -47,10 +56,25 @@ while [[ $# -gt 0 ]]; do
     --cluster-check)
       CLUSTER_CHECK=1
       shift
-      while [[ $# -gt 0 ]]; do
+      while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
         CLUSTER_CMD+="$1 "
         shift
       done
+      ;;
+    --secrets)
+      SECRET_MODE=1
+      shift
+      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
+        SECRET_NAMESPACE="$1"
+        shift
+      fi
+      if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
+        SECRET_NAME="$1"
+        shift
+      fi
+      ;;
+    --decode)
+      DECODE=1
       ;;
     -h|--help)
       echo "Use --help to see usage"
@@ -60,7 +84,33 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-#rbac
+# Secrets logic
+if [[ "$SECRET_MODE" -eq 1 ]]; then
+  ns_opt="--all-namespaces"
+  [[ -n "$SECRET_NAMESPACE" ]] && ns_opt="-n $SECRET_NAMESPACE"
+
+  if [[ -n "$SECRET_NAME" ]]; then
+    secrets=$(kubectl get secret "$SECRET_NAME" $ns_opt -o json)
+  else
+    secrets=$(kubectl get secrets $ns_opt -o json)
+  fi
+
+  echo "$secrets" | jq -r '
+    .items[] | 
+    "Namespace: \(.metadata.namespace)\nName: \(.metadata.name)\nType: \(.type)\nData:\n" +
+    (
+      if $DECODE then 
+        (.data | to_entries[] | "  \(.key): \(.value | @base64d)")
+      else 
+        (.data | to_entries[] | "  \(.key): \(.value)")
+      end | join("\n")
+    ) + "\n---"
+  ' --argjson DECODE "$DECODE"
+
+  exit 0
+fi
+
+# RBAC for k8sgpt
 if [[ "$CLUSTER_CHECK" -eq 1 ]]; then
   CMD="k8sgpt ${CLUSTER_CMD:-analyze --output text}"
 
